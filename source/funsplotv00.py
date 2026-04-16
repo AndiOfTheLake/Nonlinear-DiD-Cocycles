@@ -1,14 +1,27 @@
+"""
+Plotting module.
+"""
+
 import torch
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Plot contour plot
 
 
 def plot_contour_kde(dt, col, ax, scatter=True):
-    """
-    Create side-by-side contour plots
+    """Creates side-by-side contour plots.
+
+    Parameters
+    ----------
+    dt : torch.Tensor | numpy.ndarray
+        Input 2D data. 
+    col : str
+        Colour used for the contours.
+    ax : matplotlib.axes.Axes
+        The axis to plot on.
+    scatter : bool, optional
+        Whether to add a scatter plot of the actual sample on the contours, by default True.
     """
     if isinstance(dt, torch.Tensor):
         dt = dt.detach().cpu()
@@ -29,8 +42,8 @@ def plot_contour_kde(dt, col, ax, scatter=True):
 
 def contour_quick(dt, col="Blues"):
     """
-    Plot a simple contour plot for a quick view of the distribution; 
-    no additional arguments passed
+    Plots a simple contour plot for a quick view of the distribution; 
+    no additional arguments passed.
     """
 
     if isinstance(dt, torch.Tensor):
@@ -68,6 +81,15 @@ def set_xylim(lst_dt):
 
 
 def plot_loss(loss, title):
+    """Plots losses against the number of epochs.
+
+    Parameters
+    ----------
+    loss : torch.Tensor
+        Losses to be plotted.
+    title : str
+        Title of plot.
+    """
     plt.figure()
     plt.plot(loss)
     plt.axvline(x=loss.argmin(), color="red")

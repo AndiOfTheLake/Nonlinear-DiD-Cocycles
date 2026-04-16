@@ -1,16 +1,53 @@
+""" 
+CMMD-U module. 
+The functions in this module compute the CMMD-U loss or carry out related tasks. 
+"""
+
 import torch
 import numpy as np
 
-# Subsample data to compute median heuristic (to avoid memory overload)
-
 
 def subsample(s: torch.tensor, n: int = 6000):
-    return s[torch.randperm(len(s))[:n], :]
+    """Randomly subsamples data to compute median heuristic (to avoid memory overload).
 
-# First term
+    Parameters
+    ----------
+    s : torch.Tensor
+        Data to be subsapmled from.
+    n : int, optional
+        Size of the subsample, by default 6000.
+
+    Returns
+    -------
+    torch.Tensor
+        A random subsample of the input data.
+    """
+    return s[torch.randperm(len(s))[:n], :]
 
 
 def get_s1(y_hat_batch, y_batch, y_prod_batch, bandwidth):
+    """Computes the first sum in CMMD-U (on a minibatch).
+
+    Parameters
+    ----------
+    y_hat_batch : torch.Tensor
+        Estimated outcome using TMI maps (on the given minibatch). 
+        All combinations of "to" and "from" states are given in `y_prod_batch` (see below).
+    y_batch : torch.Tensor
+        Outcome tensor, typically of shape `(B, d)`, where `B` is the batch size and 
+        `d` is the outcome dimension (as `d` in `R^d`).
+    y_prod_batch : torch.Tensor
+        A Cartesian product of the indices of observations of shape `(B^2, 2)`, 
+        where `B` is the batch size. The first and second columns indicate 
+        the "to" and "from" states of the TMI transport maps.
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+
+    Returns
+    -------
+    s1 : torch.Tensor
+        The first sum in CMMD-U.
+    """
     y_target = y_batch[y_prod_batch[:, -2], :]
     # indices of non-trivial transformations
     # there should be n trivial transformations, where n is the (mini)batch size
@@ -31,6 +68,22 @@ def get_s1(y_hat_batch, y_batch, y_prod_batch, bandwidth):
 
 
 def get_s2(dt, bandwidth):
+    """Computes the second sum in CMMD-U.
+
+    Parameters
+    ----------
+    dt : torch.Tensor
+        A tensor of shape `(B^2, d+2)`, 
+        where `B` is the batch size and `d` is the outcome dimension. 
+        In practice, `dt=torch.cat((y_hat_batch, y_prod_batch), dim=-1)`.
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+
+    Returns
+    -------
+    torch.Tensor
+        The second sum in CMMD-U.
+    """
     y_hat = dt[:, :-2]
     i = dt[:, -2].long()
     j = dt[:, -1].long()
@@ -60,6 +113,25 @@ def get_s2(dt, bandwidth):
 
 
 def compute_cmmdu(y_batch, cond_var_batch, bandwidth, flows):
+    """Computes the CMMD-U loss (on a minibatch).
+
+    Parameters
+    ----------
+    y_batch : torch.Tensor
+        Outcome tensor, typically of shape `(B, d)`, where `B` is the batch size and 
+        `d` is the outcome dimension (as `d` in `R^d`).
+    cond_var_batch : torch.Tensor
+        Conditioning variable.
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+
+    Returns
+    -------
+    torch.Tensor
+        CMMD-U loss (on that minibatch).
+    """
     device = y_batch.device
 
     y_prod_batch = torch.cartesian_prod(
