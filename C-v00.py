@@ -103,6 +103,55 @@ def draw_samples(seed,
                 cov_trt = cov_trt, 
                 effect_type=effect_type,
                  noise="indpt"): 
+    """Draws samples for Experiment 3. 
+
+    Parameters
+    ----------
+    seed : int
+        Random seed. 
+    loc : torch.Tensor
+        The mean of the outcome distribution at dose = 0 and time = 0.
+    cov : torch.Tensor
+        The covariance of the outcome distribution at dose = 0 and time = 0.
+    d : int
+        The outcome dimension.
+    anchor_at : torch.Tensor
+        Treatment levels with anchoring groups, 
+        by default torch.linspace(start=0, end=1, steps=4).
+    n_arm : int
+        Size of each arm.
+    R : function
+        A rotation matrix as a function of dose.
+    p : zuko.flows.MAF
+        The (nonlinear) natural trend map. 
+    cov_trt : function
+        The covariance matrix of the outcome distribution at time = 0 as a function of dose. 
+    effect_type : str
+        Type of dose response curve (id or square root). 
+    noise : str
+        Noise type (independent noise draws or fixed noise draws), by default "indpt". 
+
+    Returns
+    -------
+    dict
+        A dictionary with the following keys:
+            - "lst_dt_all" : A concatenation of `lst_dt0` and `lst_dt1` (described below). 
+            - "lst_dt0": A list of of tensors at time 0. 
+            Each tensor includes the outcomes and the conditioning variables. 
+            The last element corresponds to the "middle group" 
+            while the remaining elements correspond to the "anchoring groups". 
+            - "lst_dt1": A list of of tensors at time 0. 
+            Each tensor includes the outcomes and the conditioning variables. 
+            The last element corresponds to the "middle group" 
+            while the remaining elements correspond to the "anchoring groups".         
+
+    Raises
+    ------
+    ValueError
+        Restriction on noise types. 
+    ValueError
+        Restriction on effect types. 
+    """
     if noise not in ["indpt", "fixed"]:
         raise ValueError('noise must be either "indpt" or "fixed"')
     if effect_type not in ["id", "sqrt"]:
@@ -209,6 +258,28 @@ def draw_samples(seed,
 
 def prepare_train_test_data(lst_dt, prop_validate=0.2, 
                             d=d, d_cond_var=d_cond_var):    
+    """Prepares training and test data for Expriment 2. 
+
+    Parameters
+    ----------
+    lst_dt : list
+        A list of tensors. 
+        This is expected to be the output of `draw_samples()`. 
+    prop_validate : float
+        The proportion of data designated to be in the test set, by default 0.2.
+    d : int
+        The outcome dimension.
+    d_cond_var : int
+        Dimension of the conditioning variable. 
+    
+    Returns
+    -------
+    dict
+        A dictionary containing training and validation sets. 
+        Some are lists while others are tensors. 
+        Some are standardized while others are on the original scale. 
+        Look inside the function for details. 
+    """
     # All observations; a tensor; original scale
     dt_all_orig = torch.cat(lst_dt, dim=-2) 
     # All observations; a tensor; standardized to zero mean and unit variance
@@ -363,13 +434,27 @@ os.makedirs(CKPT_DIR, exist_ok=True)
 
 
 def seed_all(s: int):
+    """Sets random seed for PyTorch, NumPy, and Python's random module simultaneously.
+
+    Parameters
+    ----------
+    s : int
+        Seed value. 
+    """
     torch.manual_seed(s)
     random.seed(s)
     np.random.seed(s)
 
 
 def begin_epoch_seed(epoch: int):
-    # keep per-epoch randomness deterministic (dropout, data aug, etc.)
+    """Sets seed for a particular epoch 
+    to keep per-epoch randomness deterministic.
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number. 
+    """
     s = BASE_SEED + epoch
     seed_all(s)
 
@@ -380,7 +465,23 @@ seed_all(BASE_SEED)  # initial/global seed
 
 
 def make_train_loader(dataset, epoch):
-    # Deterministic shuffling via per-epoch generator; num_workers=0 keeps it simple.
+    """Creates a DataLoader for the training set at an epoch.
+    It uses a deterministic per-epoch shuffling. 
+
+
+    Parameters
+    ----------
+    dataset : torch.utils.data.TensorDataset
+        Input data set. 
+    epoch : int
+        Epoch number. 
+
+    Returns
+    -------
+    torch.utils.data.DataLoader
+        Data loader for training set. 
+    """
+    # Deterministic shuffling via per-epoch generator
     g = torch.Generator()
     g.manual_seed(BASE_SEED + epoch)
     return DataLoader(dataset, batch_size=BATCH_SIZE_TRAIN,
@@ -388,9 +489,24 @@ def make_train_loader(dataset, epoch):
 
 
 def make_test_loader(dataset, epoch):
-    # Deterministic shuffling via per-epoch generator; num_workers=0 keeps it simple.
-    g = torch.Generator()
-    g.manual_seed(BASE_SEED + epoch)
+    """Creates a DataLoader for the test set at an epoch.
+    There is no shuffling. 
+
+
+    Parameters
+    ----------
+    dataset : torch.utils.data.TensorDataset
+        Input data set. 
+    epoch : int
+        Epoch number. 
+
+    Returns
+    -------
+    torch.utils.data.DataLoader
+        Data loader for test set. 
+    """
+    g = torch.Generator() # Redundant
+    g.manual_seed(BASE_SEED + epoch) # Redundant
     return DataLoader(dataset, batch_size=BATCH_SIZE_TEST,
                       shuffle=False)
 
@@ -408,6 +524,29 @@ scheduler = torch.optim.lr_scheduler.StepLR(
 
 
 def train_one_epoch(epoch, epochs, flows, opt, loader, bandwidth):
+    """Trains the model for one epoch and 
+    computes the per-epoch *training* CMMD-U loss averaged over minibatches. 
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number. 
+    epochs : int
+        Total number of epochs. 
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    opt : torch.optim.Adam
+        ADAM optimizer. 
+    loader : torch.utils.data.DataLoader
+        Loader for training data. 
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+
+    Returns
+    -------
+    float
+        Per-epoch *training* CMMD-U loss averaged over minibatches.
+    """
     cmmd_u_loss = 0.
     for y_batch, cond_var_batch in loader:
         loss = compute_cmmdu(y_batch, cond_var_batch, bandwidth, flows)
@@ -428,6 +567,26 @@ def train_one_epoch(epoch, epochs, flows, opt, loader, bandwidth):
 
 @torch.no_grad()
 def test_one_epoch(epoch, epochs, flows, loader, bandwidth):
+    """Computes the per-epoch *validation* CMMD-U loss averaged over minibatches. 
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number. 
+    epochs : int
+        Total number of epochs. 
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.    
+    loader : torch.utils.data.DataLoader
+        Loader for training data. 
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+
+    Returns
+    -------
+    float
+        Per-epoch *validation* CMMD-U loss averaged over minibatches.
+    """
     cmmd_u_loss = 0.
     for y_batch, cond_var_batch in loader:
         loss = compute_cmmdu(y_batch, cond_var_batch, bandwidth, flows)
@@ -442,6 +601,23 @@ def test_one_epoch(epoch, epochs, flows, loader, bandwidth):
 
 # Create training/validation data sets and put them in the correct device
 def create_tensordata(lst_outcome, lst_cond_var, device=device):
+    """Creates training/validation data sets and put them in the correct device.
+
+    Parameters
+    ----------
+    lst_outcome : list
+        List of standardized outcome tensors. 
+    lst_cond_var : list
+        List of tensors of the corresponding conditioning variables. 
+    device : torch.device
+        The device where the `TensorDataset` is stored. 
+
+    Returns
+    -------
+    torch.utils.data.TensorDataset
+        The `TensorDataset` to be provided to `train_all()` and subsequently 
+        to `make_train_loader()` or `make_test_loader()`.
+    """
     return TensorDataset(
         torch.cat(lst_outcome, dim=-2).to(device).float(),
         torch.cat(lst_cond_var, dim=-2).to(device).float()
@@ -452,10 +628,37 @@ def create_tensordata(lst_outcome, lst_cond_var, device=device):
 
 
 def ckpt_path(epoch):
+    """Creates a str that indicates the path to a checkpoint of the model 
+    state after the training at `epoch` is completed. 
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number.
+
+    Returns
+    -------
+    str
+        Path to checkpoint.
+    """
     return f"{CKPT_DIR}/full_{epoch:04d}.pt"
 
 
 def save_full_ckpt(epoch):
+    """Saves a checkpoint for the model state 
+    after the training at `epoch` is completed. 
+    The location of the saved checkpoint is specified by a function call of `ckpt_path()`.
+    The checkpoint is a dictionary with the following keys: 
+        - "epoch": int; the epoch number.
+        - "flows": collections.OrderedDict; the state dictionary of `flows`.
+        - "optimizer": collections.OrderedDict; the state dictionary of `opt`.
+        - "scheduler": collections.OrderedDict; the state dictionary of `scheduler`.
+
+    Parameters    
+    ----------
+    epoch : int
+        Epoch number.
+    """
     torch.save({
         "epoch": epoch,
         "flows": flows.state_dict(),
@@ -465,6 +668,20 @@ def save_full_ckpt(epoch):
 
 
 def load_full_ckpt(epoch, device=device):
+    """Loads a checkpoint after training is complete for epoch `epoch`
+    to the device specified by `device`. 
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number. 
+    device : torch.device        
+
+    Returns
+    -------
+    float
+        Returns the epoch number.
+    """
     ckpt = torch.load(ckpt_path(epoch), map_location=device)
     flows.load_state_dict(ckpt["flows"])
     opt.load_state_dict(ckpt["optimizer"])
@@ -494,6 +711,36 @@ def train_all(flows=flows,
               dt_train=dt_train,
               dt_test=dt_test,
               ckpt_stride=CKPT_STRIDE):
+    """Trains the cocycle for all epochs. 
+    Computes the training and validation losses after each epoch.
+    Saves checkpoints. 
+    Returns losses.
+
+    Parameters
+    ----------
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    opt : torch.optim.Adam
+        ADAM optimizer. 
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+    epochs : int
+        Total number of epochs. 
+    dt_train : torch.utils.data.TensorDataset
+        The `TensorDataset` passed to `make_train_loader()`.
+    dt_test : torch.utils.data.TensorDataset
+        The `TensorDataset` passed to `make_test_loader()`.
+    ckpt_stride : int
+        The "stride" of checkpoints 
+        (i.e., a checkpoint is created every `ckpt_stride` epochs).
+
+    Returns
+    -------
+    loss_training : torch.Tensor
+        A tensor of training losses of shape (epochs,).
+    loss_validation : torch.Tensor
+        A tensor of validation losses of shape (epochs,).
+    """
     
     loss_training = torch.empty(epochs)
     loss_validation = torch.empty(epochs)
@@ -587,10 +834,29 @@ def recover_flows(n,
                   dt_train=dt_train,
                   epochs=EPOCHS,
                   ckpt_stride=CKPT_STRIDE):
-    """
-    Reconstruct and save weights at epoch n.
-    This version does NOT rely on a global EPOCHS constant.
-    It uses the actually saved full checkpoints to determine feasibility.
+    """Reconstructs and saves model state at epoch `n`. 
+    It first checks if the checkpoint for the requested epoch is already available. 
+    If so, it returns the model state using that checkpoint. 
+    Otherwise, it retrains the model from checkpoint saved after the most recent epoch
+    before epoch `n` and saves and new checkpoint once the training is completed. 
+    
+    Parameters
+    ----------
+    n : torch.Tensor | int
+        Epoch number `n`.
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    opt : torch.optim.Adam
+        ADAM optimizer. 
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+    dt_train : torch.utils.data.TensorDataset
+        The `TensorDataset` passed to `make_train_loader()`.
+    epochs : int
+        Total number of epochs. 
+    ckpt_stride : int
+        The "stride" of checkpoints 
+        (i.e., a checkpoint is created every `ckpt_stride` epochs).
     """
     if torch.is_tensor(n):
         n = int(n.item())
@@ -629,16 +895,44 @@ recover_flows(n=loss_validation.argmin())
 
 # Sort data by increasing treatment value
 def sort_by_treatment(dt): 
+    """Sorts data by increasing treatment value"""
     indeces = dt[:, -d_cond_var:][:, 0].argsort()
     return dt[indeces, :]
 
 
-# Cocycle: TMI transports between observations on the *original* scale
 def cocycle(y, 
           c_to=torch.tensor([0., 1]), 
           c_from=torch.tensor([0., 0]),
           flows=flows, loc_scale=loc_scale,
           device=device):
+    """Learned TMI transport maps between outcomes on the *original* scale 
+    indexed by conditioning variables.
+
+    Parameters
+    ----------
+    y : torch.Tensor
+        Outcome tensor of shape `(n, d)` from the source distribution/distributions 
+        on the *original* scale.
+    c_to : torch.Tensor
+        Index/indeces of the target distribution/distributions. 
+        Each row of `c_to` is a conditioning variable that indexes a target distribution.
+    c_from : torch.Tensor
+        Index/indeces of the source distribution/distributions.
+        Each row of `c_from" is a conditioning variable that indexes a source distribution.
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    loc_scale : dict[str, torch.Tensor]
+        A dictionary including the location and scale parameters 
+        for a standardizing transform from the original scale. 
+        This is expected to be the output of `standardize_sample()` with `keep=True`. 
+    device : torch.device
+
+    Returns
+    -------
+    torch.Tensor
+        Outcome tensor of shape `(n, d)` from the target distribution/distributions 
+        on the *original* scale.
+    """
     y = y.to(device)
     c_to = c_to.to(device)
     c_from = c_from.to(device)
@@ -666,6 +960,27 @@ def cocycle(y,
 # Estimated natural trend function
 def trend(y, flows=flows, loc_scale=loc_scale,
           device=device): 
+    """Learned natural trend map on the *original* scale. 
+
+    Parameters
+    ----------
+    y : torch.Tensor
+        Outcome tensor of shape `(n, d)` on the *original* scale 
+        at time = 0 (i.e., pre-treatment outcomes).
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    loc_scale : dict[str, torch.Tensor]
+        A dictionary including the location and scale parameters 
+        for a standardizing transform from the original scale. 
+        This is expected to be the output of `standardize_sample()` with `keep=True`. 
+    device : torch.device
+
+    Returns
+    -------
+    torch.Tensor
+        Outcome tensor of shape `(n, d)` on the *original* scale 
+        at time = 1 (i.e., post-treatment outcomes).
+    """
     return cocycle(y,
                    c_to=torch.tensor([0., 1]),
                    c_from=torch.tensor([0., 0]),
@@ -687,6 +1002,53 @@ def estimate_mean_effects(lst_dt0=lst_dt0,
                          filename_mean_effects="mean_effects", 
                          filename_q_lower="quantile_lower", 
                          filename_q_upper="quantile_upper"):
+    """Computes the plug-in estimate of the ATT at each dose level 
+    in the observed data. At each coordinate of the estimated ATT, the sample 
+    `q_lower`th and `q_upper`th percentiles are also computed. 
+
+    Parameters
+    ----------
+    lst_dt0 : list
+        A complete list of observed outcome tensors on the *original* scale. 
+        This is expected to be extracted from a data dictionary of `draw_samples()`
+        using the `'lst_dt0'` key. 
+    lst_dt1 : list
+        A complete list of observed outcome tensors on the *original* scale. 
+        This is expected to be extracted from a data dictionary of `draw_samples()`
+        using the `'lst_dt1'` key. 
+    n_trted : int
+        Size of the treated group.
+    d : int
+        The outcome dimension.
+    device : torch.device
+    dir_saved_vars : str
+        Directory of saved variables.
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    fast : bool
+        Whether to use a fast path by checking 
+        if the quantities have already been computed, by default False.
+    q_lower : float
+        The lower quantile of the estimated ATT, by default 0.25.
+    q_upper : float
+        The upper quantile of the estimated ATT, by default 0.75.
+    filename_mean_effects : str
+        File name for the tensor of mean effects. 
+    filename_q_lower : str
+        File name for the tensor of lower quantiles.  
+    filename_q_upper : str
+        File name for the tensor of upper quantiles. 
+
+    Returns
+    -------
+    rst_dict : dict[str, torch.Tensor]
+        A dictionary containing three tensors:
+        mean effects, lower quantiles, and upper quantiles. 
+    
+    Notes
+    -----
+    These three tensors are also saved when the function is called for the first time.
+    """
     filenames = [filename_mean_effects, filename_q_lower, filename_q_upper]
     filenames_ext = [file + ".pt" for file in filenames]
     saved_files = os.listdir(str(Path(dir_saved_vars)))    
@@ -782,6 +1144,47 @@ def plot_effect(mean_eff_est=mean_eff_est,
                 t=t, f1=f, f2=f, d=d, 
                 scheme=scheme, N=dict_dt['dt_all_orig'].shape[0], 
                 verbose=True):    
+    """Plots the ATT as a function of dose level for each coordinate 
+    of a bivariate outcome. 
+
+    Parameters
+    ----------
+    mean_eff_est : torch.Tensor
+        Estimated ATT at all the observed treatment/dose levels. 
+        This is extracted from the output dictionary of `estimate_mean_effects()`.
+    mean_eff_true : torch.Tensor
+        Ground truth ATT at all the observed treatment/dose levels.
+    ql : torch.Tensor
+        Lower quantiles of the estimated ATT at the observed treatment levels.
+        This is extracted from the output dictionary of `estimate_mean_effects()`, 
+        where the quantile is specified. 
+    qu : torch.Tensor
+        Upper quantiles of the estimated ATT at the observed treatment levels.
+        This is extracted from the output dictionary of `estimate_mean_effects()`, 
+        where the quantile is specified. 
+    t : torch.Tensor
+        Treatment/dose levels in all observations. 
+    f1 : function
+        The projection of the ground truth ATT curve to the first coordinate. 
+    f2 : function
+        The projection of the ground truth ATT curve to the second coordinate. 
+    d : int
+        The outcome dimension, by default d 
+    scheme : str
+        The design of the numerical experiment(s). This is just an identifier.  
+    N : int
+        The total number of observations aggregated over all observed treatment levels 
+        *and* across time. 
+        For example, if there are `n` observations at time = 0,
+        then `N = 2 * n`.
+    verbose : bool, optional
+        Whether or not to display additional information on the plot. 
+        If True, then the MSE, `scheme`, and `N` are printed on the plot. 
+    
+    Notes
+    -----
+    This function should only be used for bivariate outcomes (i.e., `d=2`).
+    """
     x_grid = torch.linspace(0, 1, 500, device=t.device)
     fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True, sharey=True)
     # Seaborn default "deep" palette
