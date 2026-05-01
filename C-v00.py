@@ -644,7 +644,7 @@ def ckpt_path(epoch):
     return f"{CKPT_DIR}/full_{epoch:04d}.pt"
 
 
-def save_full_ckpt(epoch):
+def save_full_ckpt(epoch, loss_training=None, loss_validation=None):
     """Saves a checkpoint for the model state 
     after the training at `epoch` is completed. 
     The location of the saved checkpoint is specified by a function call of `ckpt_path()`.
@@ -659,12 +659,17 @@ def save_full_ckpt(epoch):
     epoch : int
         Epoch number.
     """
-    torch.save({
+    ckpt = {
         "epoch": epoch,
         "flows": flows.state_dict(),
         "optimizer": opt.state_dict(),
         "scheduler": scheduler.state_dict(),
-    }, ckpt_path(epoch))
+    }
+    if loss_training is not None:
+        ckpt["loss_training"] = loss_training
+    if loss_validation is not None:
+        ckpt["loss_validation"] = loss_validation
+    torch.save(ckpt, ckpt_path(epoch))
 
 
 def load_full_ckpt(epoch, device=device):
@@ -679,14 +684,14 @@ def load_full_ckpt(epoch, device=device):
 
     Returns
     -------
-    float
-        Returns the epoch number.
+    dict
+        Returns the checkpoint saved after epoch number `epoch` is finished.
     """
     ckpt = torch.load(ckpt_path(epoch), map_location=device)
     flows.load_state_dict(ckpt["flows"])
     opt.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
-    return ckpt["epoch"]
+    return ckpt
 
 
 # -------------------- workflows --------------------
@@ -710,7 +715,10 @@ def train_all(flows=flows,
               epochs=EPOCHS,
               dt_train=dt_train,
               dt_test=dt_test,
-              ckpt_stride=CKPT_STRIDE):
+              ckpt_stride=CKPT_STRIDE,
+              start_epoch=0,
+              loss_training=None,
+              loss_validation=None):
     """Trains the cocycle for all epochs. 
     Computes the training and validation losses after each epoch.
     Saves checkpoints. 
@@ -741,11 +749,13 @@ def train_all(flows=flows,
     loss_validation : torch.Tensor
         A tensor of validation losses of shape (epochs,).
     """
-    
-    loss_training = torch.empty(epochs)
-    loss_validation = torch.empty(epochs)
 
-    for epoch in range(epochs):
+    if loss_training is None:
+        loss_training = torch.empty(epochs)
+    if loss_validation is None:
+        loss_validation = torch.empty(epochs)
+
+    for epoch in range(start_epoch, epochs):
         begin_epoch_seed(epoch)
         # Training
         train_loader = make_train_loader(dataset=dt_train, epoch=epoch)
@@ -761,7 +771,9 @@ def train_all(flows=flows,
         )
 
         if (epoch % ckpt_stride == 0) or epoch == (epochs - 1):
-            save_full_ckpt(epoch)
+            save_full_ckpt(epoch=epoch,
+                           loss_training=loss_training,
+                           loss_validation=loss_validation)
 
     return loss_training, loss_validation
 
@@ -779,26 +791,79 @@ os.makedirs(dir_saved_vars, exist_ok=True)
 print("losses.pt" in os.listdir(str(Path(dir_saved_vars))))
 
 
-if "losses.pt" in os.listdir(str(Path(dir_saved_vars))):
-    losses = torch.load(str(Path(dir_saved_vars) / "losses.pt"))
-    loss_training, loss_validation = losses["loss_training"], losses["loss_validation"]
-else:
-    loss_training, loss_validation = train_all(epochs=EPOCHS)
+def run_training_loop(flows=flows,
+                      opt=opt,
+                      bandwidth=bandwidth,
+                      epochs=EPOCHS,
+                      dt_train=dt_train,
+                      dt_test=dt_test,
+                      ckpt_stride=CKPT_STRIDE,
+                      dir_saved_vars=dir_saved_vars,
+                      ckpt_dir=CKPT_DIR):
+    final_losses_path = Path(dir_saved_vars) / "losses.pt"
 
-    # Training is time-comsuming so we save training and validation losses
-    # once the training loop is complete
-    # Next time the script is run it will automatically load the
-    # saved losses if they are available
+    # If final losses exist, training already finished
+    if final_losses_path.exists():
+        losses = torch.load(final_losses_path, map_location='cpu')
+        # Indicate the training process is complete
+        (Path(dir_saved_vars) / "training_complete.flag").touch()
+        return losses["loss_training"].cpu(), losses["loss_validation"].cpu()
 
-    # This saves those variables we want to save as a dictionary
-    # * means anything after this has to be passed as keyword argument
-    def save_vars(names: list, *, scope):
-        return {name: scope[name] for name in names}
+    # Find latest checkpoint
+    pattern = re.compile(r"full_(\d{4})\.pt$")
+    saved_epochs = []
+    for name in os.listdir(ckpt_dir):
+        m = pattern.match(name)
+        if m:
+            saved_epochs.append(int(m.group(1)))
 
-    losses = save_vars(
-        names=["loss_training", "loss_validation"], scope=globals())
-    path_losses = str(Path(dir_saved_vars) / "losses.pt")
-    torch.save(losses, path_losses)
+    # No checkpoint found -> start from scratch
+    if not saved_epochs:
+        loss_training, loss_validation = train_all(flows=flows,
+                                                   opt=opt,
+                                                   bandwidth=bandwidth,
+                                                   epochs=epochs,
+                                                   dt_train=dt_train,
+                                                   dt_test=dt_test,
+                                                   ckpt_stride=ckpt_stride,
+                                                   start_epoch=0,
+                                                   loss_training=None,
+                                                   loss_validation=None)
+    else:
+        last_epoch = max(saved_epochs)
+        ckpt = load_full_ckpt(epoch=last_epoch)
+        loss_training = ckpt["loss_training"].cpu()
+        loss_validation = ckpt["loss_validation"].cpu()
+
+        loss_training, loss_validation = train_all(
+            flows=flows,
+            opt=opt,
+            bandwidth=bandwidth,
+            epochs=epochs,
+            dt_train=dt_train,
+            dt_test=dt_test,
+            ckpt_stride=ckpt_stride,
+            start_epoch=last_epoch + 1,
+            loss_training=loss_training,
+            loss_validation=loss_validation
+        )
+
+    # Save final losses once training is complete
+    torch.save(
+        {
+            "loss_training": loss_training.cpu(),
+            "loss_validation": loss_validation.cpu(),
+        },
+        final_losses_path
+    )
+
+    # Indicate the training process is complete
+    (Path(dir_saved_vars) / "training_complete.flag").touch()
+
+    return loss_training.cpu(), loss_validation.cpu()
+
+
+loss_training, loss_validation = run_training_loop()
 
 
 # Note that loss_training and loss_validation are on the CPU, NOT EVER on the GPU
@@ -833,7 +898,8 @@ def recover_flows(n,
                   bandwidth=bandwidth,
                   dt_train=dt_train,
                   epochs=EPOCHS,
-                  ckpt_stride=CKPT_STRIDE):
+                  ckpt_stride=CKPT_STRIDE,
+                  dir_saved_vars=dir_saved_vars):
     """Reconstructs and saves model state at epoch `n`. 
     It first checks if the checkpoint for the requested epoch is already available. 
     If so, it returns the model state using that checkpoint. 
@@ -858,6 +924,12 @@ def recover_flows(n,
         The "stride" of checkpoints 
         (i.e., a checkpoint is created every `ckpt_stride` epochs).
     """
+    # Do not recover flows unless the training is complete
+    complete_flag = Path(dir_saved_vars) / "training_complete.flag"
+    if not complete_flag.exists():
+        raise RuntimeError(
+            rf"Training incomplete; cannot recover flows.")
+
     if torch.is_tensor(n):
         n = int(n.item())
     else:
