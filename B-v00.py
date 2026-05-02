@@ -567,18 +567,30 @@ def ckpt_path(epoch):
 
 def save_full_ckpt(epoch, loss_training=None, loss_validation=None):
     """Saves a checkpoint for the model state 
-    after the training at `epoch` is completed. 
+    after the training is completed for epoch number `epoch`. 
     The location of the saved checkpoint is specified by a function call of `ckpt_path()`.
-    The checkpoint is a dictionary with the following keys: 
+        
+
+    Parameters
+    ----------
+    epoch : int
+        Epoch number.
+    loss_training : torch.Tensor
+        A tensor of training losses of shape (epochs,).
+    loss_validation : torch.Tensor
+        A tensor of validation losses of shape (epochs,).
+    
+    Notes
+    -----
+    The checkpoint is a dictionary that *always* contains the following keys: 
         - "epoch": int; the epoch number.
         - "flows": collections.OrderedDict; the state dictionary of `flows`.
         - "optimizer": collections.OrderedDict; the state dictionary of `opt`.
         - "scheduler": collections.OrderedDict; the state dictionary of `scheduler`.
-
-    Parameters    
-    ----------
-    epoch : int
-        Epoch number.
+    The checkpoint also includes training and validation losses when called inside
+    `train_all()`. However, when called inside `recover_flows()` the output 
+    checkpoint does not include losses. This is because the `recover_flows()` 
+    is supposed to be called only *after* the training loop is completed.
     """
     ckpt = {
         "epoch": epoch,
@@ -661,6 +673,12 @@ def train_all(flows=flows,
     ckpt_stride : int
         The "stride" of checkpoints 
         (i.e., a checkpoint is created every `ckpt_stride` epochs).
+    start_epoch : int
+        The epoch to start or resume training at. 
+    loss_training : torch.Tensor
+        A (possibly incomplete) tensor of training losses of shape (epochs,).
+    loss_validation : torch.Tensor
+        A (possibly incomplete) tensor of validation losses of shape (epochs,).
 
     Returns
     -------
@@ -668,6 +686,9 @@ def train_all(flows=flows,
         A tensor of training losses of shape (epochs,).
     loss_validation : torch.Tensor
         A tensor of validation losses of shape (epochs,).
+    Notes
+    -----
+    This function should only be called inside `run_training_loop()`.
     """
     
     if loss_training is None:
@@ -720,6 +741,45 @@ def run_training_loop(flows=flows,
                       ckpt_stride=CKPT_STRIDE,
                       dir_saved_vars=dir_saved_vars, 
                       ckpt_dir=CKPT_DIR):
+    """Executes training loop from the lastest available checkpoint.
+
+    Parameters
+    ----------
+    flows : zuko.flows.NSF
+        Neural spline flow to be trained to model the cocycle.
+    opt : torch.optim.Adam
+        ADAM optimizer. 
+    bandwidth : torch.Tensor
+        Bandwidth for the kernel (usually calculated using the median heuristic).
+    epochs : int
+        Total number of epochs. 
+    dt_train : torch.utils.data.TensorDataset
+        The `TensorDataset` passed to `make_train_loader()`.
+    dt_test : torch.utils.data.TensorDataset
+        The `TensorDataset` passed to `make_test_loader()`.
+    ckpt_stride : int
+        The "stride" of checkpoints 
+        (i.e., a checkpoint is created every `ckpt_stride` epochs).
+    dir_saved_vars : str
+        Directory of saved variables.
+    ckpt_dir : _type_, optional
+        Directory of checkpoints.
+
+    Returns
+    -------
+    loss_training : torch.Tensor
+        A complete tensor of training losses of shape (epochs,).
+    loss_validation : torch.Tensor
+        A complete tensor of validation losses of shape (epochs,).
+    
+    Notes
+    -----
+    Training is time-comsuming so we save training and validation losses
+    inside every checkpoint (via `save_full_ckpt()`). 
+    Next time the script is run it will automatically load the
+    saved full losses if they are available or resume from the lastest checkpoint. 
+    If no checkpoint exists it starts the training loop from scratch.
+    """
     final_losses_path = Path(dir_saved_vars) / "losses.pt"
 
     # If final losses exist, training already finished
@@ -844,6 +904,14 @@ def recover_flows(n,
     ckpt_stride : int
         The "stride" of checkpoints 
         (i.e., a checkpoint is created every `ckpt_stride` epochs).
+    dir_saved_vars : str
+        Directory of saved variables.
+        
+    Raises
+    ------
+    RuntimeError
+        `recover_flows()` should be called only *after* 
+        the training loop over all epoches is completed.
     """
     # Do not recover flows unless the training is complete
     complete_flag = Path(dir_saved_vars) / "training_complete.flag"

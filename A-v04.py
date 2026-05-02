@@ -808,8 +808,8 @@ def load_full_ckpt(bundle, epoch, device=device):
 
     Returns
     -------
-    float
-        Returns the epoch number.
+    dict
+        Returns the checkpoint saved after epoch number `epoch` is finished.
     """
     ckpt = torch.load(ckpt_path(bundle, epoch), map_location=device)
     bundle.flows.load_state_dict(ckpt["flows"])
